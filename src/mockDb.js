@@ -391,3 +391,33 @@ export const sendMessage = (threadId, senderId, senderName, text) => {
   }
   throw new Error("Chat thread not found.");
 };
+
+export const playChime = () => {
+  try {
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const now = audioCtx.currentTime;
+    
+    // Celestial chime: C5 (523.25 Hz) -> E5 (659.25 Hz) -> G5 (783.99 Hz)
+    const notes = [523.25, 659.25, 783.99];
+    
+    notes.forEach((freq, idx) => {
+      const osc = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      
+      osc.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + idx * 0.1);
+      
+      gainNode.gain.setValueAtTime(0, now + idx * 0.1);
+      gainNode.gain.linearRampToValueAtTime(0.15, now + idx * 0.1 + 0.02);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.1 + 0.4);
+      
+      osc.start(now + idx * 0.1);
+      osc.stop(now + idx * 0.1 + 0.4);
+    });
+  } catch (e) {
+    console.error("Audio Context failed to play chime:", e);
+  }
+};

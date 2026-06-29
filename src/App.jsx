@@ -659,6 +659,7 @@ export default function App() {
         activeThreadId={activeThreadId}
         setActiveThreadId={setActiveThreadId}
         onOpenAuth={() => setIsAuthOpen(true)}
+        addToast={addToast}
       />
 
       <NotificationToast 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Send, ArrowLeft, MessageSquare, ShieldAlert } from 'lucide-react';
-import { getChats, sendMessage } from '../mockDb';
+import { getChats, sendMessage, getUsers, playChime } from '../mockDb';
 
 export default function ChatDrawer({ 
   isOpen, 
@@ -8,7 +8,8 @@ export default function ChatDrawer({
   currentUser, 
   activeThreadId, 
   setActiveThreadId,
-  onOpenAuth // Callback if they need to register/log in
+  onOpenAuth, // Callback if they need to register/log in
+  addToast
 }) {
   const [threads, setThreads] = useState([]);
   const [activeThread, setActiveThread] = useState(null);
@@ -16,27 +17,60 @@ export default function ChatDrawer({
   
   const messagesEndRef = useRef(null);
 
+  // Keep track of current threads list for diffing message counts
+  const threadsRef = useRef([]);
+
   useEffect(() => {
     if (isOpen && currentUser) {
-      loadThreads();
+      loadThreads(false);
+      
+      // Poll every 3 seconds to check for incoming/replied messages in real time
+      const interval = setInterval(() => {
+        loadThreads(true);
+      }, 3000);
+      
+      return () => clearInterval(interval);
     }
-  }, [isOpen, currentUser, activeThreadId]);
+  }, [isOpen, currentUser, activeThreadId, activeThread?.id]);
 
   // Scroll to bottom of message list
   useEffect(() => {
     if (activeThread) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [activeThread?.messages]);
+  }, [activeThread?.messages?.length]);
 
-  const loadThreads = () => {
+  const loadThreads = (shouldChime = false) => {
     const allChats = getChats();
     const myThreads = allChats.filter(chat => chat.participants.includes(currentUser.id));
+    
+    if (shouldChime && threadsRef.current.length > 0) {
+      let hasNewMessage = false;
+      myThreads.forEach(t => {
+        const existing = threadsRef.current.find(et => et.id === t.id);
+        if (existing && t.messages.length > existing.messages.length) {
+          const lastMsg = t.messages[t.messages.length - 1];
+          if (lastMsg && lastMsg.senderId !== currentUser.id) {
+            hasNewMessage = true;
+          }
+        }
+      });
+      if (hasNewMessage) {
+        playChime(); // Play the incoming celestial chime sound!
+      }
+    }
+    
+    threadsRef.current = myThreads;
     setThreads(myThreads);
 
     // If an active thread ID was requested externally (e.g. clicking 'Chat with Seller')
     if (activeThreadId) {
       const active = myThreads.find(t => t.id === activeThreadId);
+      if (active) {
+        setActiveThread(active);
+      }
+    } else if (activeThread) {
+      const active = myThreads.find(t => t.id === activeThread.id);
       if (active) {
         setActiveThread(active);
       }
@@ -84,10 +118,47 @@ export default function ChatDrawer({
     if (!newMessageText.trim() || !activeThread) return;
 
     try {
+      const recipientId = activeThread.participants.find(p => p !== currentUser.id);
+      const recipientName = activeThread.participantNames[recipientId] || "User";
+
       const updatedThread = sendMessage(activeThread.id, currentUser.id, currentUser.name, newMessageText);
       setActiveThread(updatedThread);
       setNewMessageText('');
-      loadThreads(); // Refresh list to show latest message preview
+      loadThreads(false); // Update thread storage reference without chime
+      playChime(); // Play the outgoing chime immediately
+
+      // Show simulated email notification being sent to the recipient
+      const allUsers = getUsers();
+      const recipientUser = allUsers.find(u => u.id === recipientId);
+      if (recipientUser && addToast) {
+        addToast(`✉️ Simulated Email notification sent to ${recipientUser.email} for this message!`, "success");
+      }
+
+      // Schedule a simulated auto-reply after 3 seconds
+      if (recipientId && recipientId !== currentUser.id) {
+        setTimeout(() => {
+          let replyText = `Thank you for your message! I've received it and will get back to you shortly. ❤️`;
+          if (recipientId === 'admin') {
+            replyText = `Hello! This is Mama's Crafts Support. We have received your inquiry. One of our team members will respond shortly.`;
+          } else if (recipientId === 'luna_mama') {
+            replyText = `Hi there! I love stars and moons. I'll check my stock for you and reply in a moment! ✨`;
+          } else if (recipientId === 'bloom_mama') {
+            replyText = `Whimsical greetings! 🍄 I'm currently crafting in my fairy workshop, but I'll write back to you very soon!`;
+          } else if (recipientId === 'earth_mama') {
+            replyText = `Hello from nature! 🌿 I have received your message and will answer your questions as soon as I finish potting my crystals.`;
+          }
+
+          try {
+            sendMessage(activeThread.id, recipientId, recipientName, replyText);
+            // Show toast indicating an email alert is sent to current user's inbox
+            if (addToast) {
+              addToast(`✉️ New email notification in your inbox from ${recipientName}!`, "info");
+            }
+          } catch (err) {
+            console.error("Auto-reply failed to send:", err);
+          }
+        }, 3000);
+      }
     } catch (err) {
       alert("Failed to send message: " + err.message);
     }
