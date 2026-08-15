@@ -1,21 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { ShoppingCart, User, Shield, Compass, LogOut, CheckCircle2, ShoppingBag, Truck, MessageSquare } from 'lucide-react';
-import { 
-  initDb, 
-  getUsers, 
-  getProducts, 
+import {
+  onAuthStateChange,
+  getProfileById,
+  getUsers,
+  getProducts,
   getOrders,
-  updateSellerBio, 
-  addProduct, 
-  approveSeller, 
+  updateSellerBio,
+  addProduct,
+  approveSeller,
   rejectSellerRequest,
-  changeUserRole, 
-  approveProduct, 
+  changeUserRole,
+  approveProduct,
   rejectProduct,
   placeOrder,
   updateOrderStatus,
-  getOrCreateThread
-} from './mockDb';
+  getOrCreateThread,
+  requestSellerStatus,
+  logoutUser,
+} from './lib/db';
 
 // Components
 import Hero from './components/Hero';
@@ -50,44 +53,58 @@ export default function App() {
   // Customer Dashboard sub-tab: 'orders' | 'onboarding'
   const [customerTab, setCustomerTab] = useState('orders');
 
-  // Initialize DB, load users, products, orders, session and cart
+  // ── Load initial data and listen to auth state changes ───────────────────
   useEffect(() => {
-    initDb();
-    setUsers(getUsers());
-    setProducts(getProducts());
-    setOrders(getOrders());
-
-    // Load active session if any (simulated)
-    const savedUser = sessionStorage.getItem('current_user');
-    if (savedUser) {
-      setCurrentUser(JSON.parse(savedUser));
-    }
-
     // Load persisted shopping cart
     const savedCart = localStorage.getItem('mamas_cart');
-    if (savedCart) {
-      setCart(JSON.parse(savedCart));
-    }
-  }, []);
+    if (savedCart) setCart(JSON.parse(savedCart));
+
+    // Load all data on mount
+    refreshDbState();
+
+    // Subscribe to Supabase auth changes (login / logout / token refresh)
+    const subscription = onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        try {
+          const profile = await getProfileById(session.user.id);
+          setCurrentUser(profile);
+        } catch (err) {
+          console.error('Failed to load profile:', err);
+        }
+      } else {
+        setCurrentUser(null);
+      }
+      // Refresh data on auth events
+      refreshDbState();
+    });
+
+    return () => subscription?.unsubscribe();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Save cart to localStorage when it changes
   useEffect(() => {
     localStorage.setItem('mamas_cart', JSON.stringify(cart));
   }, [cart]);
 
-  // Update databases helper
-  const refreshDbState = () => {
-    setUsers(getUsers());
-    setProducts(getProducts());
-    setOrders(getOrders());
-    // Refresh current user info if role/bio changed
-    if (currentUser) {
-      const allUsers = getUsers();
-      const updatedMe = allUsers.find(u => u.id === currentUser.id);
-      if (updatedMe) {
-        setCurrentUser(updatedMe);
-        sessionStorage.setItem('current_user', JSON.stringify(updatedMe));
+  // Update all data from Supabase
+  const refreshDbState = async () => {
+    try {
+      const [fetchedUsers, fetchedProducts, fetchedOrders] = await Promise.all([
+        getUsers(),
+        getProducts(),
+        getOrders(),
+      ]);
+      setUsers(fetchedUsers);
+      setProducts(fetchedProducts);
+      setOrders(fetchedOrders);
+
+      // Refresh current user's profile if logged in
+      if (currentUser) {
+        const updatedMe = fetchedUsers.find(u => u.id === currentUser.id);
+        if (updatedMe) setCurrentUser(updatedMe);
       }
+    } catch (err) {
+      console.error('Failed to refresh data:', err);
     }
   };
 
@@ -106,16 +123,21 @@ export default function App() {
 
   // Auth Handlers
   const handleAuthSuccess = (user) => {
+    // onAuthStateChange will automatically update currentUser
+    // We just navigate and show a toast here
     setCurrentUser(user);
-    sessionStorage.setItem('current_user', JSON.stringify(user));
     refreshDbState();
   };
 
-  const handleLogout = () => {
-    setCurrentUser(null);
-    sessionStorage.removeItem('current_user');
-    setActiveView('home');
-    addToast("Logged out successfully.", "success");
+  const handleLogout = async () => {
+    try {
+      await logoutUser();
+      setCurrentUser(null);
+      setActiveView('home');
+      addToast("Logged out successfully.", "success");
+    } catch (err) {
+      addToast("Logout failed. Please try again.", "error");
+    }
   };
 
   // Cart actions
@@ -133,101 +155,129 @@ export default function App() {
   };
 
   // Order Placement
-  const handleCheckout = (name, address, phone) => {
+  const handleCheckout = async (name, address, phone) => {
     try {
-      const customerId = currentUser ? currentUser.id : "guest_" + Date.now();
-      placeOrder(customerId, name, address, phone, cart);
+      const customerId = currentUser ? currentUser.id : null;
+      if (!customerId) {
+        addToast("Please sign in to place an order.", "error");
+        setIsAuthOpen(true);
+        return;
+      }
+      await placeOrder(customerId, name, address, phone, cart);
       addToast("Order placed successfully! Thank you for supporting our creative mamas!", "success");
       clearCart();
-      refreshDbState();
+      await refreshDbState();
       setIsCartOpen(false);
-      
-      // If customer is logged in, redirect to dashboard so they see their order tracking!
-      if (currentUser) {
-        setActiveView('dashboard');
-        setCustomerTab('orders');
-      }
+      setActiveView('dashboard');
+      setCustomerTab('orders');
     } catch (err) {
       addToast(err.message || "Failed to place order.", "error");
     }
   };
 
   // Chat Actions
-  const handleStartChat = (recipientId, recipientName) => {
+  const handleStartChat = async (recipientId, recipientName) => {
     if (!currentUser) {
       addToast("Please sign in or register to start chatting.", "error");
       setIsAuthOpen(true);
-    } else {
-      try {
-        const thread = getOrCreateThread(currentUser.id, recipientId, currentUser.name, recipientName);
-        setActiveThreadId(thread.id);
-        setIsChatOpen(true);
-      } catch (err) {
-        addToast("Could not start chat thread.", "error");
-      }
+      return;
+    }
+    try {
+      const thread = await getOrCreateThread(currentUser.id, recipientId);
+      setActiveThreadId(thread.id);
+      setIsChatOpen(true);
+    } catch (err) {
+      addToast("Could not start chat thread.", "error");
     }
   };
 
   // Seller Dashboard Handlers
-  const handleUpdateBio = (bioData) => {
-    updateSellerBio(currentUser.id, bioData);
-    refreshDbState();
-  };
-
-  const handleAddProduct = (productData) => {
-    addProduct(productData);
-    refreshDbState();
-  };
-
-  const handleUpdateOrderStatus = (orderId, newStatus) => {
+  const handleUpdateBio = async (bioData) => {
     try {
-      updateOrderStatus(orderId, newStatus);
+      await updateSellerBio(currentUser.id, bioData);
+      await refreshDbState();
+    } catch (err) {
+      addToast("Failed to update profile.", "error");
+    }
+  };
+
+  const handleAddProduct = async (productData) => {
+    try {
+      await addProduct(productData);
+      await refreshDbState();
+    } catch (err) {
+      addToast("Failed to add product.", "error");
+    }
+  };
+
+  const handleUpdateOrderStatus = async (orderId, newStatus) => {
+    try {
+      await updateOrderStatus(orderId, newStatus);
       addToast(`Order status updated to "${newStatus}"!`, "success");
-      refreshDbState();
+      await refreshDbState();
     } catch (err) {
       addToast("Failed to update status", "error");
     }
   };
 
   // Admin Dashboard Handlers
-  const handleApproveSeller = (userId) => {
-    approveSeller(userId);
-    addToast("Application approved! User is now a Seller.", "success");
-    refreshDbState();
+  const handleApproveSeller = async (userId) => {
+    try {
+      await approveSeller(userId);
+      addToast("Application approved! User is now a Seller.", "success");
+      await refreshDbState();
+    } catch (err) {
+      addToast("Failed to approve seller.", "error");
+    }
   };
 
-  const handleRejectSellerRequest = (userId) => {
-    rejectSellerRequest(userId);
-    addToast("Application rejected.", "error");
-    refreshDbState();
+  const handleRejectSellerRequest = async (userId) => {
+    try {
+      await rejectSellerRequest(userId);
+      addToast("Application rejected.", "error");
+      await refreshDbState();
+    } catch (err) {
+      addToast("Failed to reject request.", "error");
+    }
   };
 
-  const handleChangeRole = (userId, newRole) => {
-    changeUserRole(userId, newRole);
-    addToast(`User role successfully changed to "${newRole}".`, "success");
-    refreshDbState();
+  const handleChangeRole = async (userId, newRole) => {
+    try {
+      await changeUserRole(userId, newRole);
+      addToast(`User role successfully changed to "${newRole}".`, "success");
+      await refreshDbState();
+    } catch (err) {
+      addToast("Failed to change role.", "error");
+    }
   };
 
-  const handleApproveProduct = (productId) => {
-    approveProduct(productId);
-    addToast("Product approved and published in the shop!", "success");
-    refreshDbState();
+  const handleApproveProduct = async (productId) => {
+    try {
+      await approveProduct(productId);
+      addToast("Product approved and published in the shop!", "success");
+      await refreshDbState();
+    } catch (err) {
+      addToast("Failed to approve product.", "error");
+    }
   };
 
-  const handleRejectProduct = (productId) => {
-    rejectProduct(productId);
-    addToast("Product rejected.", "error");
-    refreshDbState();
+  const handleRejectProduct = async (productId) => {
+    try {
+      await rejectProduct(productId);
+      addToast("Product rejected.", "error");
+      await refreshDbState();
+    } catch (err) {
+      addToast("Failed to reject product.", "error");
+    }
   };
 
-  const handleRequestSellerFromDashboard = () => {
-    const allUsers = getUsers();
-    const idx = allUsers.findIndex(u => u.id === currentUser.id);
-    if (idx !== -1) {
-      allUsers[idx].requestSellerStatus = true;
-      localStorage.setItem("mamas_users", JSON.stringify(allUsers));
+  const handleRequestSellerFromDashboard = async () => {
+    try {
+      await requestSellerStatus(currentUser.id);
       addToast("Seller application successfully sent to the admin!", "success");
-      refreshDbState();
+      await refreshDbState();
+    } catch (err) {
+      addToast("Failed to send application.", "error");
     }
   };
 

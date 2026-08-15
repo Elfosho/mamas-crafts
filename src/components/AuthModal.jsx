@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { X } from 'lucide-react';
-import { loginUser, registerUser } from '../mockDb';
+import { X, Loader2 } from 'lucide-react';
+import { loginUser, registerUser, resetPassword } from '../lib/db';
 
 export default function AuthModal({ isOpen, onClose, onAuthSuccess, addToast }) {
   const [isLogin, setIsLogin] = useState(true);
@@ -9,38 +9,57 @@ export default function AuthModal({ isOpen, onClose, onAuthSuccess, addToast }) 
   const [name, setName] = useState('');
   const [requestSeller, setRequestSeller] = useState(false);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+    setLoading(true);
 
     try {
       if (isLogin) {
-        // Login flow
-        const user = loginUser(email, password);
+        const user = await loginUser(email, password);
         addToast("Logged in successfully!", "success");
         onAuthSuccess(user);
         onClose();
       } else {
-        // Register flow
         if (!name.trim()) {
           setError("Name cannot be empty.");
+          setLoading(false);
           return;
         }
-        const user = registerUser(name, email, password, requestSeller);
-        if (requestSeller) {
-          addToast("Registration successful! Seller request sent to admin.", "success");
-        } else {
-          addToast("Registration successful!", "success");
-        }
-        onAuthSuccess(user);
-        onClose();
+        await registerUser(name, email, password, requestSeller);
+        // Supabase sends a confirmation email — inform the user
+        addToast("Check your email to confirm your account!", "success");
+        setError('');
+        // Switch to login view so they can sign in after confirming
+        setIsLogin(true);
       }
     } catch (err) {
       setError(err.message || "Something went wrong.");
       addToast(err.message || "Auth error.", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!email) {
+      setError("Enter your email address above first.");
+      return;
+    }
+    setLoading(true);
+    try {
+      await resetPassword(email);
+      setResetSent(true);
+      addToast("Password reset email sent!", "success");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -110,9 +129,26 @@ export default function AuthModal({ isOpen, onClose, onAuthSuccess, addToast }) 
             </div>
           )}
 
-          <button type="submit" className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: '10px' }}>
-            {isLogin ? "Sign In" : "Register"}
+          <button
+            type="submit"
+            className="btn btn-primary"
+            style={{ width: '100%', justifyContent: 'center', marginTop: '10px' }}
+            disabled={loading}
+          >
+            {loading ? <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} /> : (isLogin ? "Sign In" : "Register")}
           </button>
+
+          {isLogin && (
+            <div style={{ textAlign: 'center', marginTop: '10px' }}>
+              {resetSent ? (
+                <span style={{ fontSize: '0.8rem', color: 'var(--accent-gold)' }}>✅ Check your inbox for a reset link.</span>
+              ) : (
+                <button type="button" className="btn-text" style={{ fontSize: '0.8rem' }} onClick={handleResetPassword}>
+                  Forgot password?
+                </button>
+              )}
+            </div>
+          )}
 
           <div style={{ marginTop: '20px', textAlign: 'center', fontSize: '0.85rem' }}>
             {isLogin ? (
