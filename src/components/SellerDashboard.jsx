@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { User, Package, PlusCircle, Save, ShoppingCart, DollarSign, Check, MessageSquare } from 'lucide-react';
+import { User, Package, PlusCircle, Save, ShoppingCart, DollarSign, Check, MessageSquare, Loader2, Upload } from 'lucide-react';
+import { uploadProductImage, uploadAvatarImage } from '../lib/db';
 
 export default function SellerDashboard({ 
   user, 
@@ -17,7 +18,8 @@ export default function SellerDashboard({
   const [name, setName] = useState(user.name || '');
   const [bio, setBio] = useState(user.bio || '');
   const [tags, setTags] = useState(user.tags || '');
-  const [profileImage, setProfileImage] = useState(user.profileImage || '');
+  const [profileImage, setProfileImage] = useState(user.profile_image_url || user.profileImage || '');
+  const [avatarUploading, setAvatarUploading] = useState(false);
 
   // Add Product state
   const [prodName, setProdName] = useState('');
@@ -25,6 +27,7 @@ export default function SellerDashboard({
   const [prodCategory, setProdCategory] = useState('Candles');
   const [prodDesc, setProdDesc] = useState('');
   const [prodImg, setProdImg] = useState('');
+  const [prodImgUploading, setProdImgUploading] = useState(false);
   const [prodStock, setProdStock] = useState('5'); // Default stock quantity
 
   const myProducts = products.filter(p => p.sellerId === user.id);
@@ -34,21 +37,42 @@ export default function SellerDashboard({
     order.items.some(item => item.sellerId === user.id)
   );
 
-  // Read file as Base64 Data URL helper
-  const handleImageUpload = (file, setter) => {
+  // Upload avatar to Supabase Storage
+  const handleAvatarUpload = async (file) => {
     if (!file) return;
-    
-    if (file.size > 1.5 * 1024 * 1024) {
-      addToast("File is too large! Please choose an image smaller than 1.5MB to save storage.", "error");
+    if (file.size > 5 * 1024 * 1024) {
+      addToast('Image too large! Max 5 MB.', 'error');
       return;
     }
+    setAvatarUploading(true);
+    try {
+      const url = await uploadAvatarImage(file, user.id);
+      setProfileImage(url);
+      addToast('Avatar uploaded to cloud! ☁️ Save your profile to apply.', 'success');
+    } catch (err) {
+      addToast('Avatar upload failed: ' + err.message, 'error');
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setter(reader.result);
-      addToast("Image uploaded successfully!", "success");
-    };
-    reader.readAsDataURL(file);
+  // Upload product image to Supabase Storage
+  const handleProductImageUpload = async (file) => {
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      addToast('Image too large! Max 5 MB.', 'error');
+      return;
+    }
+    setProdImgUploading(true);
+    try {
+      const url = await uploadProductImage(file, user.id);
+      setProdImg(url);
+      addToast('Product image uploaded to cloud! ☁️', 'success');
+    } catch (err) {
+      addToast('Image upload failed: ' + err.message, 'error');
+    } finally {
+      setProdImgUploading(false);
+    }
   };
 
   const handleUpdateBioSubmit = (e) => {
@@ -193,12 +217,33 @@ export default function SellerDashboard({
                     style={{ width: '60px', height: '60px', borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border-color)' }} 
                   />
                 )}
-                <input 
-                  type="file" 
-                  accept="image/*" 
-                  className="form-control" 
-                  onChange={(e) => handleImageUpload(e.target.files[0], setProfileImage)} 
-                />
+                <label
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '8px 16px',
+                    borderRadius: '20px',
+                    border: '1px solid var(--border-color)',
+                    cursor: avatarUploading ? 'not-allowed' : 'pointer',
+                    fontSize: '0.85rem',
+                    color: 'var(--text-muted)',
+                    backgroundColor: 'var(--bg-secondary)',
+                    opacity: avatarUploading ? 0.7 : 1,
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  {avatarUploading
+                    ? <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Uploading to cloud...</>
+                    : <><Upload size={14} /> Upload Photo (max 5 MB)</>}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    disabled={avatarUploading}
+                    onChange={(e) => handleAvatarUpload(e.target.files[0])}
+                  />
+                </label>
               </div>
               <small style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '5px' }}>Or paste a direct image URL:</small>
               <input 
@@ -463,12 +508,33 @@ export default function SellerDashboard({
                     style={{ width: '60px', height: '60px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--border-color)' }} 
                   />
                 )}
-                <input 
-                  type="file" 
-                  accept="image/*" 
-                  className="form-control" 
-                  onChange={(e) => handleImageUpload(e.target.files[0], setProdImg)} 
-                />
+                <label
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '8px 16px',
+                    borderRadius: '20px',
+                    border: '1px solid var(--border-color)',
+                    cursor: prodImgUploading ? 'not-allowed' : 'pointer',
+                    fontSize: '0.85rem',
+                    color: 'var(--text-muted)',
+                    backgroundColor: 'var(--bg-secondary)',
+                    opacity: prodImgUploading ? 0.7 : 1,
+                    transition: 'all 0.2s',
+                  }}
+                >
+                  {prodImgUploading
+                    ? <><Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} /> Uploading to cloud...</>
+                    : <><Upload size={14} /> Upload Photo (max 5 MB)</>}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    style={{ display: 'none' }}
+                    disabled={prodImgUploading}
+                    onChange={(e) => handleProductImageUpload(e.target.files[0])}
+                  />
+                </label>
               </div>
               <small style={{ color: 'var(--text-muted)', display: 'block', marginBottom: '5px' }}>Or paste a direct image URL:</small>
               <input 

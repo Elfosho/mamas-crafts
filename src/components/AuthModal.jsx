@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
-import { loginUser, registerUser, resetPassword } from '../lib/db';
+import { loginUser, registerUser, resetPassword, getProfileById } from '../lib/db';
 
 export default function AuthModal({ isOpen, onClose, onAuthSuccess, addToast }) {
   const [isLogin, setIsLogin] = useState(true);
@@ -22,7 +22,7 @@ export default function AuthModal({ isOpen, onClose, onAuthSuccess, addToast }) 
     try {
       if (isLogin) {
         const user = await loginUser(email, password);
-        addToast("Logged in successfully!", "success");
+        addToast("Welcome back! 🌙", "success");
         onAuthSuccess(user);
         onClose();
       } else {
@@ -31,16 +31,28 @@ export default function AuthModal({ isOpen, onClose, onAuthSuccess, addToast }) 
           setLoading(false);
           return;
         }
-        await registerUser(name, email, password, requestSeller);
-        // Supabase sends a confirmation email — inform the user
-        addToast("Check your email to confirm your account!", "success");
-        setError('');
-        // Switch to login view so they can sign in after confirming
-        setIsLogin(true);
+        const result = await registerUser(name, email, password, requestSeller);
+        // If Supabase returned a session immediately (email confirmation disabled),
+        // log the user in right away. Otherwise ask them to check their inbox.
+        if (result?.session) {
+          const profile = await getProfileById(result.user.id);
+          addToast(`Welcome, ${name}! 🌸 Account created successfully!`, 'success');
+          onAuthSuccess(profile);
+          onClose();
+        } else {
+          addToast('Almost there! Check your email to confirm your account.', 'success');
+          setError('');
+          setIsLogin(true);
+        }
       }
     } catch (err) {
-      setError(err.message || "Something went wrong.");
-      addToast(err.message || "Auth error.", "error");
+      // Make rate limit error human-readable
+      const msg = err.message || 'Something went wrong.';
+      const friendly = msg.includes('rate limit') || msg.includes('email rate')
+        ? 'Too many emails sent. Please wait a few minutes and try again, or disable email confirmation in Supabase Dashboard → Authentication → Email.'
+        : msg;
+      setError(friendly);
+      addToast(friendly, 'error');
     } finally {
       setLoading(false);
     }

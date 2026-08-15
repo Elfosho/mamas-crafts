@@ -183,11 +183,30 @@ export default function App() {
       return;
     }
     try {
-      const thread = await getOrCreateThread(currentUser.id, recipientId);
+      // Legacy string IDs (e.g. 'admin') must be resolved to real Supabase UUIDs.
+      // We look the user up by role in the already-loaded profiles list.
+      let resolvedId = recipientId;
+      if (recipientId === 'admin' || recipientId === 'Admin Support') {
+        const adminUser = users.find(u => u.role === 'admin');
+        if (!adminUser) {
+          addToast("Support is not available at the moment. Please try again later.", "error");
+          return;
+        }
+        resolvedId = adminUser.id;
+      }
+
+      // Prevent chatting with yourself
+      if (resolvedId === currentUser.id) {
+        addToast("You cannot open a chat with yourself.", "error");
+        return;
+      }
+
+      const thread = await getOrCreateThread(currentUser.id, resolvedId);
       setActiveThreadId(thread.id);
       setIsChatOpen(true);
     } catch (err) {
-      addToast("Could not start chat thread.", "error");
+      console.error("Chat error:", err);
+      addToast("Could not start chat thread: " + (err.message || "Unknown error"), "error");
     }
   };
 

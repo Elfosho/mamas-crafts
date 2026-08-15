@@ -27,8 +27,9 @@ export const registerUser = async (name, email, password, requestSeller = false)
   if (error) throw new Error(error.message);
 
   // Create the profile row in public.profiles
+  // (the trigger handles this too, but we do it explicitly for safety)
   if (data.user) {
-    const { error: profileError } = await supabase.from('profiles').insert({
+    await supabase.from('profiles').upsert({
       id: data.user.id,
       name,
       email,
@@ -37,11 +38,12 @@ export const registerUser = async (name, email, password, requestSeller = false)
       tags: 'Newcomer',
       profile_image_url: '/assets/default_avatar.jpg',
       request_seller_status: requestSeller,
-    });
-    if (profileError) throw new Error(profileError.message);
+    }, { onConflict: 'id' });
   }
 
-  return data.user;
+  // Return full data so caller can check if session was created immediately
+  // (happens when email confirmation is disabled in Supabase Dashboard)
+  return data;
 };
 
 /**
@@ -485,7 +487,7 @@ export const sendMessage = async (threadId, senderId, content) => {
 };
 
 /**
- * Get all threads for a user (as customer or seller).
+ * Get all threads for a user, enriched with last message preview.
  */
 export const getThreadsForUser = async (userId) => {
   const { data, error } = await supabase
@@ -498,7 +500,30 @@ export const getThreadsForUser = async (userId) => {
     .or(`customer_id.eq.${userId},seller_id.eq.${userId}`)
     .order('created_at', { ascending: false });
   if (error) throw new Error(error.message);
-  return data;
+
+  // For each thread, fetch the latest message for preview
+  const threadIds = data.map(t => t.id);
+  let lastMsgMap = {};
+  if (threadIds.length > 0) {
+    // Fetch all recent messages for these threads and pick latest per thread client-side
+    const { data: msgs } = await supabase
+      .from('messages')
+      .select('thread_id, content, created_at, sender_id')
+      .in('thread_id', threadIds)
+      .order('created_at', { ascending: false })
+      .limit(threadIds.length * 10); // get enough to find last per thread
+
+    if (msgs) {
+      msgs.forEach(m => {
+        if (!lastMsgMap[m.thread_id]) lastMsgMap[m.thread_id] = m;
+      });
+    }
+  }
+
+  return data.map(t => ({
+    ...t,
+    lastMessage: lastMsgMap[t.id] || null,
+  }));
 };
 
 /**

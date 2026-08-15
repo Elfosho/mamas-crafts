@@ -1,110 +1,272 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { X, Send, ArrowLeft, MessageSquare, ShieldAlert } from 'lucide-react';
-import { getChats, sendMessage, getUsers, playChime } from '../mockDb';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  X, Send, ArrowLeft, MessageSquare, ShieldAlert,
+  Loader2, Search, Circle,
+} from 'lucide-react';
+import {
+  getThreadsForUser,
+  getMessages,
+  sendMessage,
+  subscribeToMessages,
+  getProfileById,
+  playChime,
+} from '../lib/db';
 
-export default function ChatDrawer({ 
-  isOpen, 
-  onClose, 
-  currentUser, 
-  activeThreadId, 
-  setActiveThreadId,
-  onOpenAuth, // Callback if they need to register/log in
-  addToast
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+const formatTime = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const now = new Date();
+  const diffDays = Math.floor((now - d) / 86400000);
+  if (diffDays === 0) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7) return d.toLocaleDateString([], { weekday: 'short' });
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+};
+
+const Avatar = ({ src, name, size = 42 }) => {
+  const initials = (name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  const colors = ['#7c5cbf', '#5c8abf', '#bf7c5c', '#5cbf8a', '#bf5c7c'];
+  const color = colors[(name?.charCodeAt(0) || 0) % colors.length];
+
+  if (src && !src.includes('/assets/default')) {
+    return (
+      <img
+        src={src}
+        alt={name}
+        style={{
+          width: size, height: size, borderRadius: '50%',
+          objectFit: 'cover', flexShrink: 0,
+          border: '2px solid var(--border-color)',
+        }}
+        onError={(e) => { e.target.style.display = 'none'; }}
+      />
+    );
+  }
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: '50%',
+      backgroundColor: color, flexShrink: 0,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      color: '#fff', fontWeight: '700', fontSize: size * 0.36,
+      border: '2px solid var(--border-color)',
+    }}>
+      {initials}
+    </div>
+  );
+};
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+export default function ChatDrawer({
+  isOpen, onClose, currentUser,
+  activeThreadId, setActiveThreadId,
+  onOpenAuth, addToast,
 }) {
   const [threads, setThreads] = useState([]);
   const [activeThread, setActiveThread] = useState(null);
+  const [messages, setMessages] = useState([]);
   const [newMessageText, setNewMessageText] = useState('');
-  
-  const messagesEndRef = useRef(null);
+  const [loadingThreads, setLoadingThreads] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  // Track which thread IDs have been opened this session (for unread simulation)
+  const [openedThreads, setOpenedThreads] = useState(new Set());
+  // Track new messages received via realtime per thread
+  const [unreadCounts, setUnreadCounts] = useState({});
 
-  // Keep track of current threads list for diffing message counts
-  const threadsRef = useRef([]);
+  const messagesEndRef = useRef(null);
+  const realtimeChannelRef = useRef(null);
+  const inputRef = useRef(null);
+
+  // ── Load threads ────────────────────────────────────────────────────────────
+  const loadThreads = useCallback(async (silent = false) => {
+    if (!currentUser) return;
+    if (!silent) setLoadingThreads(true);
+    try {
+      const data = await getThreadsForUser(currentUser.id);
+      setThreads(data);
+      // If external thread ID was requested, open it
+      if (activeThreadId) {
+        const found = data.find(t => t.id === activeThreadId);
+        if (found) openThread(found, data);
+      }
+    } catch (err) {
+      console.error('Failed to load threads:', err);
+    } finally {
+      if (!silent) setLoadingThreads(false);
+    }
+  }, [currentUser, activeThreadId]); // eslint-disable-line
 
   useEffect(() => {
     if (isOpen && currentUser) {
-      loadThreads(false);
-      
-      // Poll every 3 seconds to check for incoming/replied messages in real time
-      const interval = setInterval(() => {
-        loadThreads(true);
-      }, 3000);
-      
-      return () => clearInterval(interval);
+      loadThreads();
     }
-  }, [isOpen, currentUser, activeThreadId, activeThread?.id]);
+    if (!isOpen) cleanupRealtime();
+  }, [isOpen, currentUser]); // eslint-disable-line
 
-  // Scroll to bottom of message list
   useEffect(() => {
-    if (activeThread) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (activeThreadId && threads.length > 0) {
+      const found = threads.find(t => t.id === activeThreadId);
+      if (found && (!activeThread || activeThread.id !== found.id)) openThread(found, threads);
     }
-  }, [activeThread?.messages?.length]);
+  }, [activeThreadId, threads]); // eslint-disable-line
 
-  const loadThreads = (shouldChime = false) => {
-    const allChats = getChats();
-    const myThreads = allChats.filter(chat => chat.participants.includes(currentUser.id));
-    
-    if (shouldChime && threadsRef.current.length > 0) {
-      let hasNewMessage = false;
-      myThreads.forEach(t => {
-        const existing = threadsRef.current.find(et => et.id === t.id);
-        if (existing && t.messages.length > existing.messages.length) {
-          const lastMsg = t.messages[t.messages.length - 1];
-          if (lastMsg && lastMsg.senderId !== currentUser.id) {
-            hasNewMessage = true;
-          }
-        }
-      });
-      if (hasNewMessage) {
-        playChime(); // Play the incoming celestial chime sound!
-      }
-    }
-    
-    threadsRef.current = myThreads;
-    setThreads(myThreads);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-    // If an active thread ID was requested externally (e.g. clicking 'Chat with Seller')
-    if (activeThreadId) {
-      const active = myThreads.find(t => t.id === activeThreadId);
-      if (active) {
-        setActiveThread(active);
-      }
-    } else if (activeThread) {
-      const active = myThreads.find(t => t.id === activeThread.id);
-      if (active) {
-        setActiveThread(active);
-      }
+  useEffect(() => {
+    if (activeThread) inputRef.current?.focus();
+  }, [activeThread]);
+
+  // ── Realtime cleanup ────────────────────────────────────────────────────────
+  const cleanupRealtime = () => {
+    if (realtimeChannelRef.current) {
+      realtimeChannelRef.current.unsubscribe();
+      realtimeChannelRef.current = null;
     }
   };
 
+  // ── Open thread ─────────────────────────────────────────────────────────────
+  const openThread = async (thread, allThreads) => {
+    cleanupRealtime();
+    setActiveThread(thread);
+    setOpenedThreads(prev => new Set([...prev, thread.id]));
+    // Clear unread for this thread
+    setUnreadCounts(prev => ({ ...prev, [thread.id]: 0 }));
+    setLoadingMessages(true);
+    try {
+      const msgs = await getMessages(thread.id);
+      setMessages(msgs);
+
+      // Subscribe to realtime messages
+      realtimeChannelRef.current = subscribeToMessages(thread.id, async (newMsg) => {
+        let enriched = {
+          ...newMsg,
+          senderId: newMsg.sender_id,
+          text: newMsg.content,
+          timestamp: newMsg.created_at,
+          senderName: 'User',
+        };
+        try {
+          const profile = await getProfileById(newMsg.sender_id);
+          enriched.senderName = profile.name;
+        } catch (_) {}
+
+        setMessages(prev => {
+          if (prev.some(m => m.id === newMsg.id)) return prev;
+          if (newMsg.sender_id !== currentUser.id) {
+            playChime();
+            addToast?.(`💬 New message from ${enriched.senderName}!`, 'info');
+          }
+          return [...prev, enriched];
+        });
+
+        // Refresh thread list to update last message preview
+        loadThreads(true);
+      });
+    } catch (err) {
+      console.error('Failed to load messages:', err);
+    } finally {
+      setLoadingMessages(false);
+    }
+  };
+
+  // ── Back to list ────────────────────────────────────────────────────────────
+  const handleBack = () => {
+    cleanupRealtime();
+    setActiveThread(null);
+    setMessages([]);
+    setActiveThreadId(null);
+    setNewMessageText('');
+    loadThreads(true);
+  };
+
+  // ── Send message ────────────────────────────────────────────────────────────
+  const handleSend = async (e) => {
+    e.preventDefault();
+    if (!newMessageText.trim() || !activeThread || sending) return;
+    setSending(true);
+    const text = newMessageText.trim();
+    setNewMessageText('');
+
+    // Optimistic update
+    const optimistic = {
+      id: 'opt_' + Date.now(),
+      senderId: currentUser.id,
+      sender_id: currentUser.id,
+      text,
+      content: text,
+      timestamp: new Date().toISOString(),
+      optimistic: true,
+    };
+    setMessages(prev => [...prev, optimistic]);
+
+    try {
+      await sendMessage(activeThread.id, currentUser.id, text);
+      playChime();
+      // Realtime will add the real message; remove optimistic
+      setMessages(prev => prev.filter(m => !m.optimistic));
+      loadThreads(true);
+    } catch (err) {
+      setMessages(prev => prev.filter(m => !m.optimistic));
+      setNewMessageText(text);
+      addToast('Failed to send message.', 'error');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // ── Get recipient info from thread ──────────────────────────────────────────
+  const getRecipient = (thread) => {
+    if (!thread || !currentUser) return { id: null, name: 'User', image: null };
+    const isCustomer = thread.customer_id === currentUser.id;
+    const other = isCustomer ? thread.seller : thread.customer;
+    return {
+      id: isCustomer ? thread.seller_id : thread.customer_id,
+      name: other?.name || (isCustomer ? 'Seller' : 'Customer'),
+      image: other?.profile_image_url,
+    };
+  };
+
+  // ── Filter threads by search ────────────────────────────────────────────────
+  const filteredThreads = threads.filter(t => {
+    const recipient = getRecipient(t);
+    return recipient.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (t.lastMessage?.content || '').toLowerCase().includes(searchQuery.toLowerCase());
+  });
+
+  // ── Sort: threads with messages first, then by last activity ───────────────
+  const sortedThreads = [...filteredThreads].sort((a, b) => {
+    const aTime = a.lastMessage?.created_at || a.created_at;
+    const bTime = b.lastMessage?.created_at || b.created_at;
+    return new Date(bTime) - new Date(aTime);
+  });
+
+  // ── Not open ─────────────────────────────────────────────────────────────────
   if (!isOpen) return null;
 
-  // If user is not logged in, we shouldn't show active chat drawer but a login prompt
+  // ── Not logged in ─────────────────────────────────────────────────────────────
   if (!currentUser) {
     return (
       <>
         <div className="modal-overlay" style={{ zIndex: 1000, backgroundColor: 'rgba(44, 42, 41, 0.4)' }} onClick={onClose} />
-        <div className="cart-drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="cart-drawer" onClick={e => e.stopPropagation()}>
           <div className="cart-header">
-            <h3>Message Center</h3>
-            <button className="close-btn" onClick={onClose}>
-              <X size={20} />
-            </button>
+            <h3>Messages</h3>
+            <button className="close-btn" onClick={onClose}><X size={20} /></button>
           </div>
           <div style={{ padding: '40px 24px', textAlign: 'center' }}>
             <ShieldAlert size={48} style={{ color: 'var(--warning)', marginBottom: '16px' }} />
-            <h4 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.25rem', marginBottom: '10px' }}>Authentication Required</h4>
+            <h4 style={{ fontFamily: 'var(--font-serif)', fontSize: '1.25rem', marginBottom: '10px' }}>
+              Sign In to Chat
+            </h4>
             <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '24px' }}>
-              You need to sign in or create an account to start chatting with our creators and platform support.
+              You need an account to message our creators and support team.
             </p>
-            <button 
-              className="btn btn-primary" 
-              style={{ width: '100%', justifyContent: 'center' }}
-              onClick={() => {
-                onClose();
-                onOpenAuth();
-              }}
-            >
+            <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}
+              onClick={() => { onClose(); onOpenAuth(); }}>
               Sign In / Register
             </button>
           </div>
@@ -113,235 +275,295 @@ export default function ChatDrawer({
     );
   }
 
-  const handleSend = (e) => {
-    e.preventDefault();
-    if (!newMessageText.trim() || !activeThread) return;
-
-    try {
-      const recipientId = activeThread.participants.find(p => p !== currentUser.id);
-      const recipientName = activeThread.participantNames[recipientId] || "User";
-
-      const updatedThread = sendMessage(activeThread.id, currentUser.id, currentUser.name, newMessageText);
-      setActiveThread(updatedThread);
-      setNewMessageText('');
-      loadThreads(false); // Update thread storage reference without chime
-      playChime(); // Play the outgoing chime immediately
-
-      // Show simulated email notification being sent to the recipient
-      const allUsers = getUsers();
-      const recipientUser = allUsers.find(u => u.id === recipientId);
-      if (recipientUser && addToast) {
-        addToast(`✉️ Simulated Email notification sent to ${recipientUser.email} for this message!`, "success");
-      }
-
-      // Schedule a simulated auto-reply after 3 seconds
-      if (recipientId && recipientId !== currentUser.id) {
-        setTimeout(() => {
-          let replyText = `Thank you for your message! I've received it and will get back to you shortly. ❤️`;
-          if (recipientId === 'admin') {
-            replyText = `Hello! This is Mama's Crafts Support. We have received your inquiry. One of our team members will respond shortly.`;
-          } else if (recipientId === 'luna_mama') {
-            replyText = `Hi there! I love stars and moons. I'll check my stock for you and reply in a moment! ✨`;
-          } else if (recipientId === 'bloom_mama') {
-            replyText = `Whimsical greetings! 🍄 I'm currently crafting in my fairy workshop, but I'll write back to you very soon!`;
-          } else if (recipientId === 'earth_mama') {
-            replyText = `Hello from nature! 🌿 I have received your message and will answer your questions as soon as I finish potting my crystals.`;
-          }
-
-          try {
-            sendMessage(activeThread.id, recipientId, recipientName, replyText);
-            // Show toast indicating an email alert is sent to current user's inbox
-            if (addToast) {
-              addToast(`✉️ New email notification in your inbox from ${recipientName}!`, "info");
-            }
-          } catch (err) {
-            console.error("Auto-reply failed to send:", err);
-          }
-        }, 3000);
-      }
-    } catch (err) {
-      alert("Failed to send message: " + err.message);
-    }
-  };
-
-  const getRecipientInfo = (thread) => {
-    const recipientId = thread.participants.find(p => p !== currentUser.id);
-    const recipientName = thread.participantNames[recipientId] || "User";
-    return { id: recipientId, name: recipientName };
-  };
+  const recipient = activeThread ? getRecipient(activeThread) : null;
 
   return (
     <>
-      <div 
-        className="modal-overlay" 
-        style={{ zIndex: 1000, backgroundColor: 'rgba(44, 42, 41, 0.4)' }}
-        onClick={onClose}
-      />
-      
-      <div className="cart-drawer" onClick={(e) => e.stopPropagation()}>
+      <div className="modal-overlay" style={{ zIndex: 1000, backgroundColor: 'rgba(44, 42, 41, 0.4)' }} onClick={onClose} />
+      <div className="cart-drawer" style={{ display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+
         {activeThread ? (
-          /* Active Chat Conversation view */
+          /* ════════════════════════════════════
+             CONVERSATION VIEW
+          ════════════════════════════════════ */
           <>
-            <div className="cart-header" style={{ display: 'flex', alignItems: 'center' }}>
-              <button 
-                className="icon-btn" 
-                style={{ marginRight: '10px' }}
-                onClick={() => {
-                  setActiveThread(null);
-                  setActiveThreadId(null);
-                  loadThreads();
-                }}
-                title="Back to conversations"
-              >
+            {/* Header */}
+            <div className="cart-header" style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '14px 16px' }}>
+              <button className="icon-btn" onClick={handleBack} title="Back" style={{ flexShrink: 0 }}>
                 <ArrowLeft size={18} />
               </button>
-              <div style={{ flexGrow: 1 }}>
-                <h4 style={{ margin: 0, fontSize: '1rem', fontFamily: 'var(--font-serif)' }}>
-                  {getRecipientInfo(activeThread).name}
-                </h4>
-                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                  {getRecipientInfo(activeThread).id === 'admin' ? 'Support Channel' : 'Creator Channel'}
-                </span>
+              <Avatar src={recipient.image} name={recipient.name} size={36} />
+              <div style={{ flexGrow: 1, overflow: 'hidden' }}>
+                <div style={{ fontWeight: '600', fontSize: '0.95rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {recipient.name}
+                </div>
+                <div style={{ fontSize: '0.65rem', color: 'var(--accent-gold)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <Circle size={5} fill="currentColor" /> Live Chat
+                </div>
               </div>
-              <button className="close-btn" onClick={onClose}>
-                <X size={20} />
-              </button>
+              <button className="close-btn" onClick={onClose}><X size={20} /></button>
             </div>
 
-            {/* Messages history */}
-            <div className="cart-items" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', justifyContent: 'flex-start', overflowY: 'auto' }}>
-              {activeThread.messages.length === 0 ? (
-                <div style={{ textAlign: 'center', margin: '40px auto', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                  No messages yet. Send a greeting to start chatting!
+            {/* Messages */}
+            <div className="cart-items" style={{
+              padding: '12px 16px', display: 'flex', flexDirection: 'column',
+              gap: '8px', overflowY: 'auto', flexGrow: 1,
+            }}>
+              {loadingMessages ? (
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
+                  <Loader2 size={28} style={{ animation: 'spin 1s linear infinite' }} />
+                </div>
+              ) : messages.length === 0 ? (
+                <div style={{ textAlign: 'center', margin: 'auto', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                  <MessageSquare size={40} style={{ opacity: 0.3, display: 'block', margin: '0 auto 12px' }} />
+                  No messages yet. Say hello! 👋
                 </div>
               ) : (
-                activeThread.messages.map((msg) => {
-                  const isMe = msg.senderId === currentUser.id;
+                messages.map((msg, idx) => {
+                  const isMe = (msg.senderId || msg.sender_id) === currentUser.id;
+                  const text = msg.text || msg.content || '';
+                  const prevMsg = messages[idx - 1];
+                  const showTime = !prevMsg ||
+                    new Date(msg.timestamp || msg.created_at) - new Date(prevMsg.timestamp || prevMsg.created_at) > 300000;
+
                   return (
-                    <div 
-                      key={msg.id} 
-                      style={{ 
+                    <React.Fragment key={msg.id}>
+                      {showTime && (
+                        <div style={{ textAlign: 'center', fontSize: '0.65rem', color: 'var(--text-muted)', margin: '8px 0 4px', letterSpacing: '0.05em' }}>
+                          {formatTime(msg.timestamp || msg.created_at)}
+                        </div>
+                      )}
+                      <div style={{
                         alignSelf: isMe ? 'flex-end' : 'flex-start',
-                        maxWidth: '80%',
+                        maxWidth: '78%',
                         display: 'flex',
                         flexDirection: 'column',
-                        alignItems: isMe ? 'flex-end' : 'flex-start'
-                      }}
-                    >
-                      <div 
-                        style={{ 
-                          backgroundColor: isMe ? 'var(--brand-green)' : 'var(--bg-secondary)',
-                          color: isMe ? 'var(--white)' : 'var(--text-main)',
-                          padding: '10px 14px',
-                          borderRadius: isMe ? '16px 16px 2px 16px' : '16px 16px 16px 2px',
-                          fontSize: '0.85rem',
-                          lineHeight: '1.4',
+                        alignItems: isMe ? 'flex-end' : 'flex-start',
+                        opacity: msg.optimistic ? 0.6 : 1,
+                        transition: 'opacity 0.2s',
+                      }}>
+                        <div style={{
+                          background: isMe
+                            ? 'linear-gradient(135deg, var(--brand-green), #5a8f6a)'
+                            : 'var(--bg-secondary)',
+                          color: isMe ? '#fff' : 'var(--text-main)',
+                          padding: '9px 14px',
+                          borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
+                          fontSize: '0.875rem',
+                          lineHeight: '1.5',
                           border: isMe ? 'none' : '1px solid var(--border-color)',
-                          boxShadow: 'var(--shadow-sm)'
-                        }}
-                      >
-                        {msg.text}
+                          boxShadow: '0 1px 4px rgba(0,0,0,0.15)',
+                          wordBreak: 'break-word',
+                        }}>
+                          {text}
+                        </div>
                       </div>
-                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px', padding: '0 4px' }}>
-                        {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </div>
+                    </React.Fragment>
                   );
                 })
               )}
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Send input footer */}
-            <form onSubmit={handleSend} style={{ borderTop: '1px solid var(--border-color)', padding: '12px 16px', backgroundColor: 'var(--bg-secondary)', display: 'flex', gap: '10px', alignItems: 'center' }}>
-              <input 
-                type="text" 
-                className="form-control" 
-                style={{ borderRadius: '20px', flexGrow: 1, padding: '10px 16px' }}
-                placeholder="Type your message..."
+            {/* Input */}
+            <form onSubmit={handleSend} style={{
+              borderTop: '1px solid var(--border-color)',
+              padding: '10px 14px',
+              backgroundColor: 'var(--bg-secondary)',
+              display: 'flex',
+              gap: '8px',
+              alignItems: 'center',
+              flexShrink: 0,
+            }}>
+              <input
+                ref={inputRef}
+                type="text"
+                className="form-control"
+                style={{ borderRadius: '22px', flexGrow: 1, padding: '9px 16px', fontSize: '0.875rem' }}
+                placeholder="Write a message..."
                 value={newMessageText}
-                onChange={(e) => setNewMessageText(e.target.value)}
-                required
+                onChange={e => setNewMessageText(e.target.value)}
+                disabled={sending}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) handleSend(e); }}
               />
-              <button 
-                type="submit" 
-                className="btn btn-primary" 
-                style={{ padding: '10px', borderRadius: '50%', width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                title="Send"
+              <button
+                type="submit"
+                className="btn btn-primary"
+                style={{
+                  padding: '9px', borderRadius: '50%', width: '38px', height: '38px',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                }}
+                disabled={sending || !newMessageText.trim()}
               >
-                <Send size={16} />
+                {sending
+                  ? <Loader2 size={15} style={{ animation: 'spin 1s linear infinite' }} />
+                  : <Send size={15} />
+                }
               </button>
             </form>
           </>
         ) : (
-          /* Conversation Lists view */
+          /* ════════════════════════════════════
+             INBOX / THREAD LIST VIEW
+          ════════════════════════════════════ */
           <>
-            <div className="cart-header">
-              <h3>
-                <MessageSquare size={20} style={{ display: 'inline', marginRight: '8px', verticalAlign: 'text-bottom', color: 'var(--accent-gold)' }} />
+            {/* Header */}
+            <div className="cart-header" style={{ padding: '14px 18px' }}>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <MessageSquare size={19} style={{ color: 'var(--accent-gold)' }} />
                 Messages
+                {threads.length > 0 && (
+                  <span style={{
+                    background: 'var(--accent-gold)', color: '#1a1a1a',
+                    borderRadius: '20px', fontSize: '0.65rem', fontWeight: '700',
+                    padding: '2px 7px', lineHeight: '1.4',
+                  }}>
+                    {threads.length}
+                  </span>
+                )}
               </h3>
-              <button className="close-btn" onClick={onClose}>
-                <X size={20} />
-              </button>
+              <button className="close-btn" onClick={onClose}><X size={20} /></button>
             </div>
 
-            <div className="cart-items" style={{ padding: '8px 0', justifyContent: 'flex-start' }}>
-              {threads.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '40px 24px', color: 'var(--text-muted)' }}>
-                  <MessageSquare size={48} style={{ color: 'var(--border-color)', marginBottom: '16px', marginInline: 'auto' }} />
-                  <p>No active conversations yet.</p>
-                  <p style={{ fontSize: '0.8rem', marginTop: '8px' }}>
-                    Open a mama's profile or a product details screen to ask them a question!
-                  </p>
+            {/* Search bar */}
+            {threads.length > 0 && (
+              <div style={{ padding: '8px 14px 4px', borderBottom: '1px solid var(--border-color)' }}>
+                <div style={{ position: 'relative' }}>
+                  <Search size={14} style={{
+                    position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)',
+                    color: 'var(--text-muted)', pointerEvents: 'none',
+                  }} />
+                  <input
+                    type="text"
+                    className="form-control"
+                    style={{ paddingLeft: '32px', borderRadius: '20px', fontSize: '0.8rem', padding: '7px 12px 7px 32px' }}
+                    placeholder="Search conversations..."
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Thread list */}
+            <div style={{ overflowY: 'auto', flexGrow: 1 }}>
+              {loadingThreads ? (
+                <div style={{ textAlign: 'center', padding: '50px', color: 'var(--text-muted)' }}>
+                  <Loader2 size={28} style={{ animation: 'spin 1s linear infinite' }} />
+                  <div style={{ marginTop: '10px', fontSize: '0.8rem' }}>Loading conversations...</div>
+                </div>
+              ) : sortedThreads.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '50px 24px', color: 'var(--text-muted)' }}>
+                  <MessageSquare size={48} style={{ color: 'var(--border-color)', marginBottom: '16px', display: 'block', margin: '0 auto 16px' }} />
+                  {searchQuery ? (
+                    <p>No conversations matching <strong>"{searchQuery}"</strong></p>
+                  ) : (
+                    <>
+                      <p style={{ fontWeight: '600', marginBottom: '8px' }}>No conversations yet</p>
+                      <p style={{ fontSize: '0.8rem', lineHeight: '1.6' }}>
+                        Visit a mama's profile or a product page and click <strong>"Chat"</strong> to start a conversation!
+                      </p>
+                    </>
+                  )}
                 </div>
               ) : (
-                threads.map(thread => {
-                  const recipient = getRecipientInfo(thread);
-                  const lastMessage = thread.messages[thread.messages.length - 1];
+                sortedThreads.map((thread) => {
+                  const rec = getRecipient(thread);
+                  const last = thread.lastMessage;
+                  const isUnread = last &&
+                    last.sender_id !== currentUser.id &&
+                    !openedThreads.has(thread.id);
+                  const isActive = activeThread?.id === thread.id;
 
                   return (
-                    <div 
-                      key={thread.id} 
-                      style={{ 
-                        padding: '16px 24px', 
-                        borderBottom: '1px solid var(--border-color)', 
+                    <div
+                      key={thread.id}
+                      onClick={() => openThread(thread, threads)}
+                      style={{
+                        padding: '13px 18px',
+                        borderBottom: '1px solid var(--border-color)',
                         cursor: 'pointer',
-                        transition: 'background-color 0.2s ease',
                         display: 'flex',
                         alignItems: 'center',
-                        justifyContent: 'space-between'
+                        gap: '13px',
+                        backgroundColor: isActive ? 'rgba(94, 141, 108, 0.08)' : 'transparent',
+                        transition: 'background-color 0.15s',
+                        position: 'relative',
                       }}
-                      onClick={() => setActiveThread(thread)}
                       className="chat-thread-item"
                     >
+                      {/* Avatar */}
+                      <div style={{ position: 'relative', flexShrink: 0 }}>
+                        <Avatar src={rec.image} name={rec.name} size={44} />
+                        {isUnread && (
+                          <div style={{
+                            position: 'absolute', bottom: 0, right: 0,
+                            width: '12px', height: '12px', borderRadius: '50%',
+                            backgroundColor: 'var(--accent-gold)',
+                            border: '2px solid var(--bg-primary)',
+                          }} />
+                        )}
+                      </div>
+
+                      {/* Content */}
                       <div style={{ flexGrow: 1, overflow: 'hidden' }}>
-                        <div style={{ fontWeight: '600', fontSize: '0.9rem', color: 'var(--text-main)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span>{recipient.name}</span>
-                          {lastMessage && (
-                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: 'normal' }}>
-                              {new Date(lastMessage.timestamp).toLocaleDateString()}
+                        <div style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'baseline',
+                          marginBottom: '3px',
+                        }}>
+                          <span style={{
+                            fontWeight: isUnread ? '700' : '600',
+                            fontSize: '0.9rem',
+                            color: isUnread ? 'var(--text-main)' : 'var(--text-main)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            maxWidth: '55%',
+                          }}>
+                            {rec.name}
+                          </span>
+                          {last && (
+                            <span style={{
+                              fontSize: '0.65rem',
+                              color: isUnread ? 'var(--accent-gold)' : 'var(--text-muted)',
+                              fontWeight: isUnread ? '600' : 'normal',
+                              flexShrink: 0,
+                            }}>
+                              {formatTime(last.created_at)}
                             </span>
                           )}
                         </div>
-                        <div style={{ 
-                          fontSize: '0.8rem', 
-                          color: 'var(--text-muted)', 
-                          marginTop: '4px',
+                        <div style={{
+                          fontSize: '0.78rem',
+                          color: isUnread ? 'var(--text-main)' : 'var(--text-muted)',
+                          fontWeight: isUnread ? '500' : 'normal',
                           whiteSpace: 'nowrap',
                           overflow: 'hidden',
-                          textOverflow: 'ellipsis'
+                          textOverflow: 'ellipsis',
                         }}>
-                          {lastMessage ? (
-                            <span>
-                              {lastMessage.senderId === currentUser.id ? 'You: ' : ''}
-                              {lastMessage.text}
-                            </span>
+                          {last ? (
+                            <>
+                              {last.sender_id === currentUser.id && (
+                                <span style={{ color: 'var(--text-muted)', fontWeight: 'normal' }}>You: </span>
+                              )}
+                              {last.content}
+                            </>
                           ) : (
-                            <span style={{ fontStyle: 'italic' }}>No messages yet</span>
+                            <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>No messages yet — say hi! 👋</span>
                           )}
                         </div>
                       </div>
+
+                      {/* Unread dot */}
+                      {isUnread && (
+                        <div style={{
+                          width: '8px', height: '8px', borderRadius: '50%',
+                          backgroundColor: 'var(--accent-gold)',
+                          flexShrink: 0,
+                        }} />
+                      )}
                     </div>
                   );
                 })
