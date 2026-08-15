@@ -31,6 +31,7 @@ export const registerUser = async (name, email, password, requestSeller = false)
     const { error: profileError } = await supabase.from('profiles').insert({
       id: data.user.id,
       name,
+      email,
       role: 'customer',
       bio: 'New mama on the platform. Loving handmade crafts!',
       tags: 'Newcomer',

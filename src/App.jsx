@@ -442,6 +442,7 @@ export default function App() {
               <AdminDashboard 
                 users={users}
                 products={products}
+                currentUser={currentUser}
                 onApproveSeller={handleApproveSeller}
                 onRejectSellerRequest={handleRejectSellerRequest}
                 onChangeRole={handleChangeRole}

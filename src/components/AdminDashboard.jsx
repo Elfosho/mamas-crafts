@@ -4,6 +4,7 @@ import { Users, ClipboardList, Check, X, ShieldAlert, MessageSquare } from 'luci
 export default function AdminDashboard({ 
   users, 
   products, 
+  currentUser,
   onApproveSeller, 
   onRejectSellerRequest, 
   onChangeRole, 
@@ -13,7 +14,7 @@ export default function AdminDashboard({
 }) {
   const [activeTab, setActiveTab] = useState('users'); // 'users' or 'products'
 
-  const pendingSellers = users.filter(u => u.requestSellerStatus);
+  const pendingSellers = users.filter(u => u.request_seller_status);
   const pendingProducts = products.filter(p => p.status === 'pending');
 
   return (
@@ -123,8 +124,8 @@ export default function AdminDashboard({
                         </span>
                       </td>
                       <td>
-                        {/* Select to assign role, including Admin role */}
-                        {u.id !== 'admin' ? (
+                        {/* Don't allow changing your own role */}
+                        {u.id !== currentUser?.id ? (
                           <select
                             className="form-control"
                             style={{ padding: '6px 12px', fontSize: '0.8rem', width: 'auto', display: 'inline-block', height: 'auto', borderRadius: '20px' }}
@@ -136,11 +137,11 @@ export default function AdminDashboard({
                             <option value="admin">Admin</option>
                           </select>
                         ) : (
-                          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Super Admin</span>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>You (Super Admin)</span>
                         )}
                       </td>
                       <td>
-                        {u.id !== 'admin' && (
+                        {u.id !== currentUser?.id && (
                           <button
                             className="btn btn-secondary"
                             style={{ padding: '6px 12px', fontSize: '0.75rem', borderRadius: '15px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}

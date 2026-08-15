@@ -138,15 +138,11 @@ CREATE POLICY "products_update" ON public.products
   );
 
 -- ─── ORDERS policies ─────────────────────────────────────────────────────────
--- Customers see own orders; sellers see orders with their items; admins see all
+-- Customers see own orders; admins and sellers see all
 CREATE POLICY "orders_read" ON public.orders
   FOR SELECT USING (
     auth.uid() = customer_id OR
-    EXISTS (
-      SELECT 1 FROM order_items oi
-      WHERE oi.order_id = id AND oi.seller_id = auth.uid()
-    ) OR
-    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role = 'admin')
+    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role IN ('admin', 'seller'))
   );
 
 -- Authenticated users can place orders
@@ -156,19 +152,15 @@ CREATE POLICY "orders_insert" ON public.orders
 -- Sellers/admins can update order status
 CREATE POLICY "orders_update" ON public.orders
   FOR UPDATE USING (
-    EXISTS (
-      SELECT 1 FROM order_items oi
-      WHERE oi.order_id = id AND oi.seller_id = auth.uid()
-    ) OR
-    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role = 'admin')
+    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role IN ('admin', 'seller'))
   );
 
 -- ─── ORDER ITEMS policies ────────────────────────────────────────────────────
 CREATE POLICY "order_items_read" ON public.order_items
   FOR SELECT USING (
-    EXISTS (SELECT 1 FROM orders o WHERE o.id = order_id AND o.customer_id = auth.uid()) OR
     auth.uid() = seller_id OR
-    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role = 'admin')
+    EXISTS (SELECT 1 FROM profiles WHERE id = auth.uid() AND role IN ('admin', 'seller')) OR
+    EXISTS (SELECT 1 FROM orders o WHERE o.id = order_id AND o.customer_id = auth.uid())
   );
 
 CREATE POLICY "order_items_insert" ON public.order_items
