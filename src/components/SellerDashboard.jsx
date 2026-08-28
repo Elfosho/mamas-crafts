@@ -85,7 +85,7 @@ export default function SellerDashboard({
       name,
       bio,
       tags,
-      profileImage: profileImage || "/assets/default_seller.jpg"
+      profileImage: profileImage || null
     });
     addToast("Profile updated successfully!", "success");
   };

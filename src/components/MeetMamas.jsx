@@ -8,10 +8,7 @@ function MamaAvatar({ src, name }) {
   const palette = ['#7c5cbf', '#5c8abf', '#bf7c5c', '#5cbf8a', '#bf5c7c', '#8a7cbf', '#bf8a5c'];
   const color = palette[(name?.charCodeAt(0) || 0) % palette.length];
 
-  const hasValidSrc = src &&
-    !src.includes('/assets/default') &&
-    !src.includes('default_seller') &&
-    !src.includes('default_avatar');
+  const hasValidSrc = src && src.trim() !== '';
 
   if (hasValidSrc && !imgError) {
     return (
