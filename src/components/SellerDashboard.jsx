@@ -46,9 +46,12 @@ export default function SellerDashboard({
     }
     setAvatarUploading(true);
     try {
+      // 1️⃣ upload to Supabase Storage
       const url = await uploadAvatarImage(file, user.id);
+      // 2️⃣ persist avatar URL in profile (RLS allows only owner)
+      await updateAvatarUrl(user.id, url);
       setProfileImage(url);
-      addToast('Avatar uploaded to cloud! ☁️ Save your profile to apply.', 'success');
+      addToast('Avatar uploaded and saved! 🎉', 'success');
     } catch (err) {
       addToast('Avatar upload failed: ' + err.message, 'error');
     } finally {
