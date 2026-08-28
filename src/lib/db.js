@@ -421,6 +421,21 @@ export const uploadAvatarImage = async (file, userId) => {
   return data.publicUrl;
 };
 
+/**
+ * Save a new avatar URL in the user's profile row.
+ * RLS policy "profiles_update_own" allows this only for the owner.
+ */
+export const updateAvatarUrl = async (userId, avatarUrl) => {
+  const { data, error } = await supabase
+    .from('profiles')
+    .update({ profile_image_url: avatarUrl })
+    .eq('id', userId)
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+  return data;
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CHAT — Realtime (Supabase Realtime Channels)
 // ═══════════════════════════════════════════════════════════════════════════════
